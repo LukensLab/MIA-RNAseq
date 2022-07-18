@@ -1,0 +1,2146 @@
+# Set working directory and load packages 
+setwd("~/Desktop/MIARNAseq code and plots")
+library(lattice)
+library(DESeq2) 
+library(pheatmap) 
+library(GSA) 
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(tidyverse)
+library(gprofiler2)
+library(pals)
+library(EnhancedVolcano)
+library(stringr)
+library(data.table)
+library(VennDiagram)
+library(circlize)
+
+#we create a function to define our genes as not changed, or up or downregulated, this is with padj
+categorize.deseq.df <- function(df, thresh = 0.1, log2fold = 0.0, treat = 'Auxin') {
+  df.activated = data.frame(matrix(nrow = 0, ncol = 0))
+  df.repressed = data.frame(matrix(nrow = 0, ncol = 0))
+  if (nrow(df[df$padj < thresh & !is.na(df$padj) & df$log2FoldChange > log2fold,]) != 0) {
+    df.activated = df[df$padj < thresh & !is.na(df$padj) & df$log2FoldChange > log2fold,]
+    df.activated$response = paste(treat, 'Activated')
+  }
+  if (nrow(df[df$padj < thresh & !is.na(df$padj) & df$log2FoldChange < -log2fold,]) != 0) {
+    df.repressed = df[df$padj < thresh & !is.na(df$padj) & df$log2FoldChange < -log2fold,]
+    df.repressed$response = paste(treat, 'Repressed')
+  }
+  df.unchanged = df[df$padj > 0.5 & !is.na(df$padj) & abs(df$log2FoldChange) < 0.25,]
+  df.unchanged$response = paste(treat, 'Unchanged')
+  df.dregs = df[!(df$padj < thresh & !is.na(df$padj) & df$log2FoldChange > log2fold) &
+                  !(df$padj < thresh & !is.na(df$padj) & df$log2FoldChange < -log2fold) &
+                  !(df$padj > 0.5 & !is.na(df$padj) &
+                      abs(df$log2FoldChange) < 0.25), ]
+  df.dregs$response = paste(treat, 'All Other Genes')
+  df.effects.lattice =
+    rbind(df.activated,
+          df.unchanged,
+          df.repressed,
+          df.dregs)
+  df.effects.lattice$response = factor(df.effects.lattice$response)
+  df.effects.lattice$response = relevel(df.effects.lattice$response, ref = paste(treat, 'Unchanged'))
+  df.effects.lattice$response = relevel(df.effects.lattice$response, ref = paste(treat, 'All Other Genes'))
+  return(df.effects.lattice)
+}
+
+#this is with pval 
+categorize.deseq.df2 <- function(df, thresh = 0.05, log2fold = 0.0, treat = 'Auxin') {
+  df.activated = data.frame(matrix(nrow = 0, ncol = 0))
+  df.repressed = data.frame(matrix(nrow = 0, ncol = 0))
+  if (nrow(df[df$pval < thresh & !is.na(df$pval) & df$log2FoldChange > log2fold,]) != 0) {
+    df.activated = df[df$pval < thresh & !is.na(df$pval) & df$log2FoldChange > log2fold,]
+    df.activated$response = paste(treat, 'Activated')
+  }
+  if (nrow(df[df$pval < thresh & !is.na(df$pval) & df$log2FoldChange < -log2fold,]) != 0) {
+    df.repressed = df[df$pval < thresh & !is.na(df$pval) & df$log2FoldChange < -log2fold,]
+    df.repressed$response = paste(treat, 'Repressed')
+  }
+  df.unchanged = df[df$pval > 0.5 & !is.na(df$pval) & abs(df$log2FoldChange) < 0.25,]
+  df.unchanged$response = paste(treat, 'Unchanged')
+  df.dregs = df[!(df$pval < thresh & !is.na(df$pval) & df$log2FoldChange > log2fold) &
+                  !(df$pval < thresh & !is.na(df$pval) & df$log2FoldChange < -log2fold) &
+                  !(df$pval > 0.5 & !is.na(df$pval) &
+                      abs(df$log2FoldChange) < 0.25), ]
+  df.dregs$response = paste(treat, 'All Other Genes')
+  df.effects.lattice2 =
+    rbind(df.activated,
+          df.unchanged,
+          df.repressed,
+          df.dregs)
+  df.effects.lattice2$response = factor(df.effects.lattice2$response)
+  df.effects.lattice2$response = relevel(df.effects.lattice2$response, ref = paste(treat, 'Unchanged'))
+  df.effects.lattice2$response = relevel(df.effects.lattice2$response, ref = paste(treat, 'All Other Genes'))
+  return(df.effects.lattice2)
+}
+
+#PCA plot function
+plotPCAlattice <- function(df, file = 'PCA_lattice.pdf') {
+  perVar = round(100 * attr(df, "percentVar"))
+  df = data.frame(cbind(df, sapply(strsplit(as.character(df$name), '_rep'), '[', 1)))
+  colnames(df) = c(colnames(df)[1:(ncol(df)-1)], 'unique_condition')
+  print(df)
+  color.x = substring(rainbow(length(unique(df$unique_condition))), 1,7)
+  df$color = NA
+  df$alpha.x = NA
+  df$alpha.y = NA
+  df$colpal = NA
+  for (i in 1:length(unique(df$unique_condition))) {
+    df[df$unique_condition == unique(df$unique_condition)[[i]],]$color = color.x[i]
+    reps_col<- df[df$unique_condition == unique(df$unique_condition)[[i]],]
+    replicates.x = nrow(reps_col)
+    alx <- rev(seq(0.2, 1, length.out = replicates.x))
+    for(rep in 1:replicates.x) {
+      na <- reps_col[rep, ]$name
+      df[df$name == na, ]$alpha.x = alx[rep]
+      aly = as.hexmode(round(alx * 255))
+      df[df$name == na, ]$alpha.y = aly[rep]
+      cp = paste0(color.x[i], aly)
+      df[df$name == na, ]$colpal = cp[rep]
+    }
+  }
+  colpal = df$colpal
+  df$name = gsub('_', ' ', df$name)
+  df$name <- factor(df$name, levels=df$name, order=TRUE)
+  pdf(file, width=6, height=6, useDingbats=FALSE)
+  print(xyplot(PC2 ~ PC1, groups = name, data=df,
+               xlab = paste('PC1: ', perVar[1], '% variance', sep = ''),
+               ylab = paste('PC2: ', perVar[2], '% variance', sep = ''),
+               par.settings = list(superpose.symbol = list(pch = c(20), col=colpal)),
+               pch = 20, cex = 1.7,
+               aspect = 1,
+               auto.key = TRUE,
+               col = colpal))
+  dev.off()
+}
+
+
+#now we are loading the data in and creating the dataframe
+x <- read.table("Pla_PolyIC_E12_F1.gene.counts.txt",header=FALSE)
+
+all.counts <- data.frame(row.names = x$V1)
+
+samples <- c("Pla_PolyIC_E12_F1", "Pla_PolyIC_E12_F2","Pla_PolyIC_E12_F3","Pla_PolyIC_E12_F4",
+             "Pla_PolyIC_E12_M1", "Pla_PolyIC_E12_M2","Pla_PolyIC_E12_M3","Pla_PolyIC_E12_M4",
+             "Pla_PolyIC_E14_F1", "Pla_PolyIC_E14_F2","Pla_PolyIC_E14_F3","Pla_PolyIC_E14_F4",
+             "Pla_PolyIC_E14_M1", "Pla_PolyIC_E14_M2","Pla_PolyIC_E14_M3","Pla_PolyIC_E14_M4",
+             "Pla_Saline_E12_F1", "Pla_Saline_E12_F2","Pla_Saline_E12_F3","Pla_Saline_E12_F4",
+             "Pla_Saline_E12_M1", "Pla_Saline_E12_M2","Pla_Saline_E12_M3","Pla_Saline_E12_M4",
+             "Pla_Saline_E14_F1", "Pla_Saline_E14_F2","Pla_Saline_E14_F3","Pla_Saline_E14_F4",
+             "Pla_Saline_E14_M1", "Pla_Saline_E14_M2","Pla_Saline_E14_M3","Pla_Saline_E14_M4")
+
+
+
+
+
+for (i in samples){
+  j<-read.table(print(paste0(i,".gene.counts.txt")))
+  all.counts  = cbind(all.counts,data.frame(i = j[2]))
+}
+
+colnames(all.counts) <- samples
+
+save(all.counts,file='all.counts.pla.Rdata')
+View(all.counts)
+
+merged.counts <- all.counts[-(55358:55362),]
+View(merged.counts)
+tail(merged.counts)
+
+ensembl.all = read.table('gencode.vM28.annotation.gtf', sep='\t', header =F);
+ensembl.gene.names = data.frame(sapply(strsplit(sapply(strsplit(as.character(ensembl.all[,9]),'gene_name '), "[", 2), ";"), "[", 1));
+ensembl.id.names = data.frame(sapply(strsplit(sapply(strsplit(as.character(ensembl.all[,9]),'gene_id '), "[", 2), ";"), "[", 1));
+ensembl.code = cbind(ensembl.gene.names, ensembl.id.names);
+ensembl.code = ensembl.code[!duplicated(ensembl.code[,2]),];
+rownames(ensembl.code) = ensembl.code[,2];
+colnames(ensembl.code) = c('gene', 'id');
+
+save(ensembl.code, file = "ensembl.code.Rdata")
+
+rm(ensembl.all)
+rm(ensembl.gene.names)
+rm(ensembl.id.names)
+
+load("ensembl.code.Rdata")
+
+merged.counts = merge(merged.counts, ensembl.code, by="row.names", all.x=F)
+rownames(merged.counts) <- make.names(merged.counts$gene, unique=TRUE)
+merged.counts <- merged.counts[,-c(1,34,35)]
+
+
+rm(ensembl.code)
+View(merged.counts)
+
+save(merged.counts, file="merged.counts.pla.Rdata")
+load("merged.counts.pla.Rdata")
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_F",4), 
+                             rep("Pla_PolyIC_E12_M",4),
+                             rep("Pla_PolyIC_E14_F",4), 
+                             rep("Pla_PolyIC_E14_M",4),
+                             rep("Pla_Saline_E12_F",4), 
+                             rep("Pla_Saline_E12_M",4),
+                             rep("Pla_Saline_E14_F",4), 
+                             rep("Pla_Saline_E14_M",4)))
+
+deseq.counts.table = DESeqDataSetFromMatrix(merged.counts, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions);
+dds = DESeq(deseq.counts.table)
+vsd = varianceStabilizingTransformation(dds)
+plotPCA(vsd)
+pcaData <- plotPCA(vsd, intgroup=c("condition"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, shape=condition)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+
+ggplot(pcaData, aes(PC1, PC2, color=condition)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme_classic() +
+  coord_fixed()
+
+view(pcaData)
+pcaData2<-separate(pcaData,
+                          col=condition,
+                          into = c("Tissue","Treatment","Timepoint","Sex"),
+                          sep = "_",
+                          remove = TRUE)
+view(pcaData2)
+
+tiff("pla_pca_sex_time.tiff", units="in", width=4, height=3, res=300)
+ggplot(pcaData2, aes(PC1, PC2, color=Sex, shape=Timepoint)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  scale_color_manual(values = c("skyblue","dodgerblue4"))+
+  theme_classic() 
+dev.off()
+
+tiff("pla_pca_tx_time.tiff", units="in", width=4, height=3, res=300)
+ggplot(pcaData2, aes(PC1, PC2, color=Treatment, shape=Timepoint)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  scale_color_manual(values = c("darkorange","dodgerblue4"))+
+  theme_classic() 
+dev.off()
+
+
+
+## next cluster within each time point!
+
+rm(merged.counts)
+load("merged.counts.pla.Rdata")
+
+#E12
+View(merged.counts)
+mergedE12<-merged.counts[,c(1:8,17:24)]
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_F",4), 
+                             rep("Pla_PolyIC_E12_M",4),
+                             rep("Pla_Saline_E12_F",4), 
+                             rep("Pla_Saline_E12_M",4)))
+
+deseq.counts.table.e12 = DESeqDataSetFromMatrix(mergedE12, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table.e12)$condition<-factor(colData(deseq.counts.table.e12)$sample.conditions);
+dds = DESeq(deseq.counts.table.e12)
+vsd = vst(dds)
+plotPCA(vsd)
+pcaDataE12 <- plotPCA(vsd, intgroup=c("condition"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaDataE12, "percentVar"))
+
+pcaDataE12<-separate(pcaDataE12,
+                     col=condition,
+                     into = c("Tissue","Treatment","Timepoint","Sex"),
+                     sep = "_",
+                     remove = TRUE)
+
+tiff("pla_pca_e12_tx_sex.tiff", units="in", width=4, height=3, res=300)
+ggplot(pcaDataE12, aes(PC1, PC2, color=Treatment, shape=Sex)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  scale_color_manual(values = c("darkorange","dodgerblue4"))+
+  theme_classic() 
+dev.off()
+
+
+#E14
+
+View(merged.counts)
+mergedE14<-merged.counts[,c(9:16,25:32)]
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), 
+                             rep("Pla_PolyIC_E14_M",4),
+                             rep("Pla_Saline_E14_F",4), 
+                             rep("Pla_Saline_E14_M",4)))
+
+deseq.counts.table.e14 = DESeqDataSetFromMatrix(mergedE14, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table.e14)$condition<-factor(colData(deseq.counts.table.e14)$sample.conditions);
+dds = DESeq(deseq.counts.table.e14)
+vsd = vst(dds)
+plotPCA(vsd)
+pcaDataE14 <- plotPCA(vsd, intgroup=c("condition"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaDataE14, "percentVar"))
+
+pcaDataE14<-separate(pcaDataE14,
+                     col=condition,
+                     into = c("Tissue","Treatment","Timepoint","Sex"),
+                     sep = "_",
+                     remove = TRUE)
+
+tiff("pla_pca_e14_tx_sex.tiff", units="in", width=4, height=3, res=300)
+ggplot(pcaDataE14, aes(PC1, PC2, color=Treatment, shape=Sex)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  scale_color_manual(values = c("darkorange","dodgerblue4"))+
+  theme_classic() 
+dev.off()
+
+
+## SALINE ONLY - all time points
+
+view(merged.counts)
+mergedSaline<-merged.counts[,c(17:32)]
+View(mergedSaline)
+sample.conditions = factor(c(rep("Pla_Saline_E12_F",4), 
+                             rep("Pla_Saline_E12_M",4),
+                             rep("Pla_Saline_E14_F",4),
+                             rep("Pla_Saline_E14_M",4)))
+
+deseq.counts.table.saline = DESeqDataSetFromMatrix(mergedSaline, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table.saline)$condition<-factor(colData(deseq.counts.table.saline)$sample.conditions);
+dds = DESeq(deseq.counts.table.saline)
+vsd = vst(dds)
+plotPCA(vsd)
+pcaDataSaline <- plotPCA(vsd, intgroup=c("condition"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaDataSaline, "percentVar"))
+
+pcaDataSaline<-separate(pcaDataSaline,
+                        col=condition,
+                        into = c("Tissue","Treatment","Timepoint","Sex"),
+                        sep = "_",
+                        remove = TRUE)
+
+tiff("pla_pca_saline_timepoint_sex.tiff", units="in", width=4, height=3, res=300)
+ggplot(pcaDataSaline, aes(PC1, PC2, color=Timepoint, shape=Sex)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  scale_color_manual(values = c("darkgreen","darkseagreen","skyblue","dodgerblue4"))+
+  theme_classic() 
+dev.off()
+
+
+
+
+
+
+####Differential expression analysis and creating MA/Volcano plots#####
+
+
+
+#### Pla_PolyIC_E12 F vs M####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(1:8)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_F",4), rep("Pla_PolyIC_E12_M",4)), levels=c("Pla_PolyIC_E12_F","Pla_PolyIC_E12_M"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+normalize.counts.5xFADv5xFADSykKO <- counts(mm.atac,normalized = TRUE)
+res.mm.atac = as.data.frame(results(mm.atac))
+
+Pla_PolyIC_E12_FvsM.lattice =
+  categorize.deseq.df(res.mm.atac,
+                      thresh = 0.1, log2fold = 0.0, treat = 'M')
+Pla_PolyIC_E12_FvsM.lattice
+
+write.csv(Pla_PolyIC_E12_FvsM.lattice, file = "Pla_PolyIC_E12_MvsF.lattice_121121.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+
+
+#### Pla_PolyIC_E14 F vs M####
+merged.counts
+merged.counts.small = merged.counts[,9:16]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), rep("Pla_PolyIC_E14_M",4)), levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+normalize.counts.5xFADv5xFADSykKO <- counts(mm.atac,normalized = TRUE)
+res.mm.atac = results(mm.atac)
+
+Pla_PolyIC_E14_FvsM.lattice =
+  categorize.deseq.df(res.mm.atac,
+                      thresh = 0.1, log2fold = 0.0, treat = 'M')
+Pla_PolyIC_E14_FvsM.lattice
+
+write.csv(Pla_PolyIC_E14_FvsM.lattice, file = "Pla_PolyIC_E14_MvsF.lattice_102221.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+
+#### Pla_Saline_E12 F vs M####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(17:24)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_Saline_E12_F",4), rep("Pla_Saline_E12_M",4)), levels=c("Pla_Saline_E12_F","Pla_Saline_E12_M"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+normalize.counts.5xFADv5xFADSykKO <- counts(mm.atac,normalized = TRUE)
+res.mm.atac = results(mm.atac)
+
+Pla_Saline_E12_FvsM.lattice =
+  categorize.deseq.df(res.mm.atac,
+                      thresh = 0.1, log2fold = 0.0, treat = 'M')
+Pla_Saline_E12_FvsM.lattice
+
+write.csv(Pla_Saline_E12_FvsM.lattice, file = "Pla_Saline_E12_MvsF.lattice_102221.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+#### MG_Saline_E14 F vs M####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(25:32)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_Saline_E14_F",4), rep("Pla_Saline_E14_M",4)), levels=c("Pla_Saline_E14_F","Pla_Saline_E14_M"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+normalize.counts.5xFADv5xFADSykKO <- counts(mm.atac,normalized = TRUE)
+res.mm.atac = results(mm.atac)
+
+Pla_Saline_E14_FvsM.lattice =
+  categorize.deseq.df(res.mm.atac,
+                      thresh = 0.1, log2fold = 0.0, treat = 'M')
+
+Pla_Saline_E14_FvsM.lattice
+
+write.csv(Pla_Saline_E14_FvsM.lattice, file = "Pla_Saline_E14_MvsF.lattice_102221.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+
+
+
+#### Pla PolyIC vs Saline E12 F ####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(1:4,17:20)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_F",4), rep("Pla_Saline_E12_F",4)), levels=c("Pla_Saline_E12_F","Pla_PolyIC_E12_F"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+res.mm.atac = results(mm.atac)
+x = as.data.frame(res.mm.atac)
+
+Pla_PolyIC_vs_Saline_E12_F.lattice =
+  categorize.deseq.df(x,
+                      thresh = 0.1, log2fold = 0.0, treat = 'PolyIC')
+
+Pla_PolyIC_vs_Saline_E12_F.lattice
+
+write.csv(Pla_PolyIC_vs_Saline_E12_F.lattice, file = "Pla_PolyIC_vs_Saline_E12_F.lattice.111721.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+#### Pla PolyIC vs Saline E12 M ####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(5:8,21:24)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_M",4), rep("Pla_Saline_E12_M",4)), levels=c("Pla_Saline_E12_M","Pla_PolyIC_E12_M"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+res.mm.atac = results(mm.atac)
+x = as.data.frame(res.mm.atac)
+
+Pla_PolyIC_vs_Saline_E12_M.lattice =
+  categorize.deseq.df(x,
+                      thresh = 0.1, log2fold = 0.0, treat = 'PolyIC')
+
+Pla_PolyIC_vs_Saline_E12_M.lattice
+
+write.csv(Pla_PolyIC_vs_Saline_E12_M.lattice, file = "Pla_PolyIC_vs_Saline_E12_M.lattice.111721.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+#### Pla PolyIC vs Saline E14 F ####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(9:12,25:28)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), rep("Pla_Saline_E14_F",4)), levels=c("Pla_Saline_E14_F","Pla_PolyIC_E14_F"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+res.mm.atac = results(mm.atac)
+x = as.data.frame(res.mm.atac)
+
+Pla_PolyIC_vs_Saline_E14_F.lattice =
+  categorize.deseq.df(x,
+                      thresh = 0.1, log2fold = 0.0, treat = 'PolyIC')
+
+Pla_PolyIC_vs_Saline_E14_F.lattice
+
+write.csv(Pla_PolyIC_vs_Saline_E14_F.lattice, file = "Pla_PolyIC_vs_Saline_E14_F.lattice.111721.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+#### Pla PolyIC vs Saline E14 M ####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(13:16,29:32)]
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_M",4), rep("Pla_Saline_E14_M",4)), levels=c("Pla_Saline_E14_M","Pla_PolyIC_E14_M"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+res.mm.atac = results(mm.atac)
+x = as.data.frame(res.mm.atac)
+
+Pla_PolyIC_vs_Saline_E14_M.lattice =
+  categorize.deseq.df(x,
+                      thresh = 0.1, log2fold = 0.0, treat = 'PolyIC')
+
+Pla_PolyIC_vs_Saline_E14_M.lattice
+
+write.csv(Pla_PolyIC_vs_Saline_E14_M.lattice, file = "Pla_PolyIC_vs_Saline_E14_M.lattice.111721.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+
+
+#### Pla PolyIC vs Saline E12 - both sexes ####
+View(merged.counts)
+merged.counts.small = merged.counts[,c(17:24,1:8)]
+colnames(merged.counts.small)<-gsub("_F.*","",colnames(merged.counts.small))
+colnames(merged.counts.small)<-gsub("_M.*","",colnames(merged.counts.small))
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12",8), rep("Pla_Saline_E12",8)), levels=c("Pla_PolyIC_E12","Pla_Saline_E12"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+res.mm.atac = results(mm.atac)
+x = as.data.frame(res.mm.atac)
+
+Pla_PolyIC_vs_Saline_E12_MnF.lattice =
+  categorize.deseq.df(x,
+                      thresh = 0.1, log2fold = 0.0, treat = 'PolyIC')
+
+head(Pla_PolyIC_vs_Saline_E12_MnF.lattice)
+view(Pla_PolyIC_vs_Saline_E12_MnF.lattice)
+
+write.csv(Pla_PolyIC_vs_Saline_E12_MnF.lattice, file = "Pla_PolyIC_vs_Saline_E12_MnF.lattice.122921.csv", sep = "\t",
+          row.names = TRUE, col.names = TRUE)
+
+
+
+## Pla - saline - E12 to E14 comparison
+
+View(mergedSaline)
+merged.counts.small = mergedSaline
+colnames(merged.counts.small)<-gsub("_F.*","",colnames(merged.counts.small))
+colnames(merged.counts.small)<-gsub("_M.*","",colnames(merged.counts.small))
+View(merged.counts.small)
+
+sample.conditions = factor(c(rep("MG_Saline_E12",8), rep("MG_Saline_E14",8)), levels=c("MG_Saline_E12","MG_Saline_E14"))
+mm.deseq.counts.table = DESeqDataSetFromMatrix(merged.counts.small, DataFrame(sample.conditions), ~ sample.conditions)
+mm.atac = mm.deseq.counts.table
+atac.size.factors = estimateSizeFactorsForMatrix(merged.counts.small)
+
+sizeFactors(mm.atac) = atac.size.factors
+mm.atac = estimateDispersions(mm.atac)
+mm.atac = nbinomWaldTest(mm.atac)
+res.mm.atac = results(mm.atac)
+x = as.data.frame(res.mm.atac)
+
+Pla_Saline_MnF_E12_v_E14.lattice =
+  categorize.deseq.df(x,
+                      thresh = 0.1, log2fold = 0.0, treat = 'E14')
+
+head(Pla_Saline_MnF_E12_v_E14.lattice)
+view(Pla_Saline_MnF_E12_v_E14.lattice)
+
+write.csv(Pla_Saline_MnF_E12_v_E14.lattice, file = "Pla_Saline_MnF_E12_v_E14.lattice.042922.csv",row.names = TRUE)
+
+
+
+
+
+
+
+
+
+
+
+## Save all the lattices
+save(Pla_PolyIC_E12_FvsM.lattice, file = "Pla_PolyIC_E12_FvsM.lattice.Rdata")
+save(Pla_PolyIC_E14_FvsM.lattice, file = "Pla_PolyIC_E14_FvsM.lattice.Rdata")
+save(Pla_Saline_E12_FvsM.lattice, file = "Pla_Saline_E12_FvsM.lattice.Rdata")
+save(Pla_Saline_E14_FvsM.lattice, file = "Pla_Saline_E14_FvsM.lattice.Rdata")
+save(Pla_PolyIC_vs_Saline_E12_F.lattice, file = "Pla_PolyIC_vs_Saline_E12_F.lattice.Rdata")
+save(Pla_PolyIC_vs_Saline_E14_F.lattice, file = "Pla_PolyIC_vs_Saline_E14_F.lattice.Rdata")
+save(Pla_PolyIC_vs_Saline_E12_M.lattice, file = "Pla_PolyIC_vs_Saline_E12_M.lattice.Rdata")
+save(Pla_PolyIC_vs_Saline_E14_M.lattice, file = "Pla_PolyIC_vs_Saline_E14_M.lattice.Rdata")
+save(Pla_PolyIC_vs_Saline_E12_MnF.lattice, file = "Pla_PolyIC_vs_Saline_E12_MnF.lattice.Rdata")
+save(Pla_Saline_MnF_E12_v_E14.lattice, file = "Pla_Saline_MnF_E12_v_E14.lattice.Rdata")
+
+
+
+#### # Differentially Expressed Genes ####
+
+# load the datasets
+load("Pla_PolyIC_E12_FvsM.lattice.Rdata")
+load("Pla_PolyIC_E14_FvsM.lattice.Rdata")
+load("Pla_Saline_E12_FvsM.lattice.Rdata")
+load("Pla_Saline_E14_FvsM.lattice.Rdata")
+load("Pla_PolyIC_vs_Saline_E12_F.lattice.Rdata")
+load("Pla_PolyIC_vs_Saline_E14_F.lattice.Rdata")
+load("Pla_PolyIC_vs_Saline_E12_M.lattice.Rdata")
+load("Pla_PolyIC_vs_Saline_E14_M.lattice.Rdata")
+load("Pla_PolyIC_vs_Saline_E12_MnF.lattice.Rdata")
+load("Pla_Saline_MnF_E12_v_E14.lattice.Rdata")
+load("merged.counts.pla.Rdata")
+
+
+
+#show the number of differentially expressed genes
+print(table(Pla_PolyIC_E12_FvsM.lattice$response))
+print(table(Pla_PolyIC_E14_FvsM.lattice$response))
+print(table(Pla_Saline_E12_FvsM.lattice$response))
+print(table(Pla_Saline_E14_FvsM.lattice$response))
+print(table(Pla_PolyIC_vs_Saline_E12_F.lattice$response))
+print(table(Pla_PolyIC_vs_Saline_E14_F.lattice$response))
+print(table(Pla_PolyIC_vs_Saline_E12_M.lattice$response))
+print(table(Pla_PolyIC_vs_Saline_E14_M.lattice$response))
+print(table(Pla_PolyIC_vs_Saline_E12_MnF.lattice$response))
+print(table(Pla_Saline_MnF_E12_v_E14.lattice$response))
+
+
+
+
+#### DEG PLOTS ####
+
+# bringing the heat with volcano plots and heatmaps ;)
+
+
+
+# Placenta polyI:C v. saline - combined males and females
+
+polyicF = merged.counts[1:4]
+polyicM = merged.counts[5:8]
+salineF = merged.counts[17:20]
+salineM = merged.counts[21:24]
+
+# Creates table with sample names in column and gene counts
+c = cbind(salineM,salineF,polyicM,polyicF)
+
+# Creates a list of sample conditions with the two levels being: "Pla_Saline_E12" and "Pla_PolyIC_E12"
+sample.conditions = factor(c(rep("Pla_Saline_E12",8), rep("Pla_PolyIC_E12",8)), levels=c("Pla_Saline_E12","Pla_PolyIC_E12"))
+
+# Creates dataframe with sample names as row names and sample conditions listed in the column 
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+
+# The line below is to relevel the experimental conditions
+colData(deseq.counts.table)$sample.conditions<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_Saline_E12", "Pla_PolyIC_E12"));
+dds = DESeq(deseq.counts.table)
+coefList <- resultsNames(dds)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+# Pvalues into -log10
+x <- resLFC.vol$pvalue
+y <- order(resLFC.vol$pvalue, decreasing = FALSE)
+head(x[y], 50)
+
+
+# List of gene labels you want to plot  
+geneLabels <- c("Ubd","Cxcl10","Cxcl9","Ifit3b","Mx1","Ifit3","Cmpk2","Ifit1","Oasl1","Mx2","Oasl1","Ifit2","Iigp1","Igtp","Irf7","Tap1","Ifi44","Ifi211", "Tlr3","Stat1","Stat2","Myd88","Il17ra","Il6ra","Il6","Il17a","Il1b","Psmb10","Psmb8","Tap2","Tapbp","B2m","Ddx58", "Ifih1")
+
+tiff("volcano_pla_e12_polyic_v_saline.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-5,310),
+                xlim = c(-5.5,9.5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = 10e-5,
+                FCcutoff = 2.0,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+# heatmaps
+
+lattice = Pla_PolyIC_vs_Saline_E12_MnF.lattice
+lattice = na.omit(lattice)
+
+# top 20 UP terms only
+rld_HH = rlogTransformation(dds)
+y = lattice[lattice$log2FoldChange > 0,]
+y = y[order(y$padj),]
+inc = rownames(y)[1:20]
+a = assay(rld_HH)[c(inc[1:20]),]
+a = a - rowMeans(a)
+
+tiff("heatmap_pla_e12_polyic_v_saline_20up.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(a, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE)
+dev.off()
+
+
+# IL17 signaling
+
+Th17<-c("Gata3","Rora","Stat3","Stat5a","Jak2","Jak3","Lck","Il1r1","Il1rap","Il2ra","Il2rb","Il2rg","Il4ra","Il6st","Il12rb1","Il6","Il27","Nfkbie","Nfkb1","Nfkbia","Nfkbib")
+
+Th17 = assay(rld_HH)[c(Th17),]
+Th17 = Th17 - rowMeans(Th17)
+
+dev.off()
+tiff("heatmap_pla_e12_saline_m_v_f_th17.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(Th17, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+# Interferon signaling 
+
+
+Interferon<-c("Ifit1","Ifit2","Ifit3","Ifit3b","Ifitm1","Ifitm2","Ifitm3","Ifih1","Irgm1","Irgm2","Igtp","Iigp1","Irf3","Irf5","Irf7","Irf9","Isg15","Myd88","Usp18","Uba7","Ube2l6","Ube2e1","Stat1","Stat2","Stat3","Stat4","Tyk2","Jak1","Jak2","Jak3","Oas1a","Oas1g","Oas2","Oas3","Oasl1")
+
+
+Interferon = assay(rld_HH)[c(Interferon),]
+Interferon = Interferon - rowMeans(Interferon)
+write.csv(Interferon, file = "interferon_foldchange.csv", row.names = TRUE)
+
+dev.off()
+tiff("heatmap_pla_e12_saline_m_v_f_interferonMASTER.tiff", units="in", width=4, height=5, res=500)
+pheatmap(Interferon, 
+         colorRampPalette(c("black","dodgerblue","floralwhite", 
+                            "floralwhite","darkorange","red4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+InterferonLigand<-c("Ifna1","Ifna2","Ifna4","Ifna5","Ifnb1","Ifng","Ifnk")
+
+InterferonLigand = assay(rld_HH)[c(InterferonLigand),]
+InterferonLigand = InterferonLigand - rowMeans(InterferonLigand)
+
+dev.off()
+tiff("heatmap_pla_e12_saline_m_v_f_interferonLigand.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(InterferonLigand, 
+         colorRampPalette(c("black","dodgerblue","floralwhite", 
+                            "floralwhite","darkorange","red4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+InterferonReceptor<-c("Ifnar1","Ifnar2","Ifngr1","Ifngr2","Ifnlr1")
+
+InterferonReceptor = assay(rld_HH)[c(InterferonReceptor),]
+InterferonReceptor = InterferonReceptor - rowMeans(InterferonReceptor)
+
+dev.off()
+tiff("heatmap_pla_e12_saline_m_v_f_interferonReceptor.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(InterferonReceptor, 
+         colorRampPalette(c("black","dodgerblue","floralwhite", 
+                            "floralwhite","darkorange","red4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+
+# violin plot
+
+Interferon<-c("Ifit1","Ifit2","Ifit3","Ifit3b","Ifitm1","Ifitm2","Ifitm3","Ifih1","Irgm1","Irgm2","Igtp","Iigp1","Irf3","Irf5","Irf7","Irf9","Isg15","Myd88","Usp18","Uba7","Ube2l6","Ube2e1","Stat1","Stat2","Stat3","Stat4","Tyk2","Jak1","Jak2","Jak3","Oas1a","Oas1g","Oas2","Oas3","Oasl1")
+
+Interferon<-c("Ifit1",	"Ifit2"	,"Ifit3",	"Ifit3b"	,"Ifih1",	"Irgm1",	"Irgm2",	"Igtp",	"Iigp1"	,"Irf7",	"Isg15"	,"Usp18",	"Stat1"	,"Stat2",	"Oas1a"	,"Oas1g",	"Oas2",	"Oas3",	"Oasl1")
+
+Interferon = assay(rld_HH)[c(Interferon),]
+write.csv(Interferon, file = "Interferon_reads_2.csv", row.names = TRUE)
+
+
+
+
+#  E12 Females PolyIC v. Saline
+
+a = merged.counts[1:4]
+b = merged.counts[17:20]
+c = cbind(b,a)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_F",4), rep("Pla_Saline_E12_F",4)), levels=c("Pla_PolyIC_E12_F","Pla_Saline_E12_F"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+
+# The line below is to relevel the experimental conditions
+colData(deseq.counts.table)$sample.conditions<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E12_F","Pla_Saline_E12_F"));
+dds = DESeq(deseq.counts.table)
+coefList <- resultsNames(dds)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Ubd","Cxcl10","Cxcl9","Ifit3b","Mx1","Ifit3","Cmpk2","Ifit1","Oasl1","Mx2","Oasl1","Ifit2","Iigp1","Igtp","Irf7","Tap1","Ifi44","Ifi211", "Tlr3","Stat1","Stat2","Myd88","Il17ra","Il6ra","Il6","Il17a","Il1b","Psmb10","Psmb8","Tap2","Tapbp","B2m","Ddx58", "Ifih1","Stab1","Mrc1","F13a1")
+
+
+tiff("volcano_pla_e12_females_polyic_v_saline.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-5,310),
+                xlim = c(-5.5,9.5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+
+
+rld_HH = rlogTransformation(dds)
+lattice = Pla_PolyIC_vs_Saline_E12_F.lattice
+lattice = na.omit(lattice)
+
+y = lattice[lattice$log2FoldChange > 0,]
+y = y[order(y$padj),]
+inc = rownames(y)[1:15]
+
+y = lattice[lattice$log2FoldChange < 0,]
+y = y[order(y$padj),]
+dec = rownames(y)[1:5]
+
+a = assay(rld_HH)[c(inc[1:15],dec[1:5]),]
+a = a - rowMeans(a)
+
+
+tiff("heatmap_pla_e12_females_polyic_v_saline_15up5down.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(a, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+
+
+
+
+
+
+
+# E12 Male PolyIC v. Saline
+
+a = merged.counts[5:8]
+b = merged.counts[21:24]
+c = cbind(b,a)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_M",4), rep("Pla_Saline_E12_M",4)), levels=c("Pla_PolyIC_E12_M","Pla_Saline_E12_M"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$sample.conditions<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E12_M","Pla_Saline_E12_M"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Ubd","Cxcl10","Cxcl9","Ifit3b","Mx1","Ifit3","Cmpk2","Ifit1","Oasl1","Mx2","Oasl1","Ifit2","Iigp1","Igtp","Irf7","Tap1","Ifi44","Ifi211", "Tlr3","Stat1","Stat2","Myd88","Il17ra","Il6ra","Il6","Il17a","Il1b","Psmb10","Psmb8","Tap2","Tapbp","B2m","Ddx58", "Ifih1")
+
+tiff("volcano_pla_e12_males_polyic_v_saline.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-5,310),
+                xlim = c(-5.5,9.5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+rld_HH = rlogTransformation(dds)
+lattice = Pla_PolyIC_vs_Saline_E12_M.lattice
+lattice = na.omit(lattice)
+
+y = lattice[lattice$log2FoldChange > 0,]
+y = y[order(y$padj),]
+inc = rownames(y)[1:15]
+
+y = lattice[lattice$log2FoldChange < 0,]
+y = y[order(y$padj),]
+dec = rownames(y)[1:5]
+
+a = assay(rld_HH)[c(inc[1:15],dec[1:5]),]
+a = a - rowMeans(a)
+
+
+tiff("heatmap_pla_e12_males_polyic_v_saline_15up5down.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(a, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+
+
+
+# E12 Polyic F v. M
+
+a = merged.counts[1:4]
+b = merged.counts[5:8]
+c = cbind(a,b)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E12_F",4), rep("Pla_PolyIC_E12_M",4)), levels=c("Pla_PolyIC_E12_F","Pla_PolyIC_E12_M"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E12_F","Pla_PolyIC_E12_M"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Ddx3y","Eif2s3y","Xist","Uty","Gm29650")
+
+tiff("volcano_pla_e12_polyic_f_v_m.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-1,100),
+                xlim = c(-6,6),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+
+
+
+# E12 Saline F v. M
+
+a = merged.counts[17:20]
+b = merged.counts[21:24]
+c = cbind(a,b)
+
+sample.conditions = factor(c(rep("Pla_Saline_E12_F",4), rep("Pla_Saline_E12_M",4)), levels=c("Pla_Saline_E12_F","Pla_Saline_E12_M"))
+
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_Saline_E12_F","Pla_Saline_E12_M"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Uty","Eif2s3y","Stab1","Mrc1","F13a1","Ccl3","Ddx3y","Kdm5d","Ncan","Map2","Lhx1","Ccl4","Robo3","Ngp","Dlx1","Ina")
+
+tiff("volcano_pla_e12_saline_f_v_m.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-1,140),
+                xlim = c(-6,6),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+rld_HH = rlogTransformation(dds)
+lattice = Pla_Saline_E12_FvsM.lattice
+lattice = na.omit(lattice)
+
+y = lattice[lattice$log2FoldChange > 0,]
+y = y[order(y$padj),]
+inc = rownames(y)[1:10]
+
+y = lattice[lattice$log2FoldChange < 0,]
+y = y[order(y$padj),]
+dec = rownames(y)[1:10]
+
+a = assay(rld_HH)[c(inc[1:10],dec[1:10]),]
+a = a - rowMeans(a)
+
+
+tiff("heatmap_pla_e12_saline_f_v_m_20deg.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(a, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+
+
+
+
+# E14 Female PolyIC v. Saline
+
+a = merged.counts[9:12]
+b = merged.counts[25:28]
+c = cbind(b,a)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), rep("Pla_Saline_E14_F",4)), levels=c("Pla_PolyIC_E14_F","Pla_Saline_E14_F"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E14_F","Pla_Saline_E14_F"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Stab1","Mrc1","F13a1","Cx3cr1","Ccl3","Fosb","Nfkbid","C1qb","Ccl4","C1qc","Prg2","Egr3","Cstdc5","Cxcl9","Ccl5")
+
+tiff("volcano_pla_e14_female_polyic_v_saline.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-1,70),
+                xlim = c(-5,5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+rld_HH = rlogTransformation(dds)
+lattice = Pla_PolyIC_vs_Saline_E14_F.lattice
+lattice = na.omit(lattice)
+
+y = lattice[lattice$log2FoldChange > 0,]
+y = y[order(y$padj),]
+inc = rownames(y)[1:5]
+
+y = lattice[lattice$log2FoldChange < 0,]
+y = y[order(y$padj),]
+dec = rownames(y)[1:20]
+
+a = assay(rld_HH)[c(dec[1:20]),]
+a = a - rowMeans(a)
+
+
+tiff("heatmap_pla_e14_females_polyic_v_saline_20down.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(a, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+
+
+
+
+
+# E14 Male PolyIC v. Saline
+
+a = merged.counts[13:16]
+b = merged.counts[29:32]
+c = cbind(b,a)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_M",4), rep("Pla_Saline_E14_M",4)), levels=c("Pla_PolyIC_E14_M","Pla_Saline_E14_M"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E14_M","Pla_Saline_E14_M"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Apod","Ccl5","Cxcl10","Ctrb1","Retnla")
+
+tiff("volcano_pla_e14_male_polyic_v_saline.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-1,70),
+                xlim = c(-5,5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+
+
+
+
+
+
+# E14 Saline Female v Male
+
+a = merged.counts[25:28]
+b = merged.counts[29:32]
+c = cbind(a,b)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), rep("Pla_PolyIC_E14_M",4)), levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Uty","Eif2s3y","Stab1","Mrc1","F13a1","Ccl3","Ddx3y","Kdm5d","Ccl4","Robo3","Ngp","Dlx1","Prg2")
+
+tiff("volcano_pla_e14_saline_f_v_m.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-1,70),
+                xlim = c(-5,5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+rld_HH = rlogTransformation(dds)
+lattice = Pla_Saline_E14_FvsM.lattice
+lattice = na.omit(lattice)
+
+y = lattice[lattice$log2FoldChange > 0,]
+y = y[order(y$padj),]
+inc = rownames(y)[1:10]
+
+y = lattice[lattice$log2FoldChange < 0,]
+y = y[order(y$padj),]
+dec = rownames(y)[1:10]
+
+a = assay(rld_HH)[c(inc[1:10],dec[1:10]),]
+a = a - rowMeans(a)
+
+
+tiff("heatmap_pla_e14_saline_f_v_m_20deg.tiff", units="in", width=4, height=3.5, res=300)
+pheatmap(a, 
+         colorRampPalette(c("dodgerblue4","skyblue3","whitesmoke", 
+                            "whitesmoke","thistle","mediumorchid4"))(100), 
+         cluster_rows=FALSE, 
+         cellwidth = 10,
+         cellheight = 8,
+         cluster_cols=FALSE, 
+         show_rownames=T, 
+         show_colnames = FALSE,
+         fontsize = 8) 
+dev.off()
+
+
+
+
+
+
+
+# E14 PolyIC Female v Male
+
+a = merged.counts[9:12]
+b = merged.counts[13:16]
+c = cbind(a,b)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), rep("Pla_PolyIC_E14_M",4)), levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"));
+dds = DESeq(deseq.counts.table)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Xist","Uty","Ddx3y","Eif2s3y","Kdm5d","Sohlh2")
+
+tiff("volcano_pla_e14_polyic_f_v_m.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-1,70),
+                xlim = c(-5,5),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = .1,
+                FCcutoff = 1.5,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+# Placenta saline - combined males and females - E12 v E14
+
+view(merged.counts)
+E12salineF = merged.counts[17:20]
+E12salineM = merged.counts[21:24]
+E14salineF = merged.counts[25:28]
+E14salineM = merged.counts[29:32]
+c = cbind(E12salineM,E12salineF,E14salineM,E14salineF)
+view(c)
+
+sample.conditions = factor(c(rep("Pla_Saline_E12",8), rep("Pla_Saline_E14",8)), levels=c("Pla_Saline_E12","Pla_Saline_E14"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$sample.conditions<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_Saline_E12","Pla_Saline_E14"));
+dds = DESeq(deseq.counts.table)
+coefList <- resultsNames(dds)
+resLFC.vol <- lfcShrink(dds, coef = 2, type="apeglm")
+
+geneLabels <- c("Prl8a6","Psg26","Hbb.bh1","Phlda2","Psg16","Hba.x","Prl3a1","Prl8a8","Dio3","Hsd3b6","Ace2","Cts6","Ceacam9","Lepr","Slc4a1")
+
+tiff("volcano_pla_saline_e12_v_e14.tiff", units="in", width=8, height=6, res=300)
+EnhancedVolcano(resLFC.vol,
+                ylim = c(-5,300),
+                xlim = c(-6,6),
+                labSize = 4,
+                lab= rownames(resLFC.vol),
+                drawConnectors = TRUE,
+                endsConnectors = 'last',
+                max.overlaps = 100,
+                lengthConnectors = unit(.01,"npc"),
+                selectLab = geneLabels,
+                x='log2FoldChange',
+                y='padj',
+                pCutoff = 10e-5,
+                FCcutoff = 2.0,
+                col=c('gray', 'gray34', 'thistle', 'mediumorchid4'),
+                subtitle = NULL,
+                title = NULL)
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Katherine's automated version of GO and KEGG terms 
+
+
+# E12 combined males and females - polyic v saline
+
+polyicF = merged.counts[1:4]
+polyicM = merged.counts[5:8]
+salineF = merged.counts[17:20]
+salineM = merged.counts[21:24]
+c = cbind(salineM,salineF,polyicM,polyicF)
+
+sample.conditions = factor(c(rep("Pla_Saline_E12",8), rep("Pla_PolyIC_E12",8)), levels=c("Pla_Saline_E12","Pla_PolyIC_E12"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_Saline_E12","Pla_PolyIC_E12"));
+dds = DESeq(deseq.counts.table)
+rld_HH = rlogTransformation(dds)
+
+lattice = Pla_PolyIC_vs_Saline_E12_MnF.lattice
+lattice = na.omit(lattice)
+
+
+res <- results(dds)
+resOrdered <- res[order(res$padj),] 
+resSig <- subset(resOrdered, padj < 0.1) 
+resSigUp <- subset(resSig, log2FoldChange > 0)
+resSigDown <- subset(resSig, log2FoldChange < 0)
+upGenes.list <- rownames(resSigUp)
+downGenes.list <- rownames(resSigDown)
+
+gostres <- gost(query = list("Upregulated Genes" = upGenes.list, 
+                             "Downregulated Genes" = downGenes.list),
+                organism = "mmusculus", 
+                ordered_query = TRUE,
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE,
+                measure_underrepresentation = FALSE,
+                evcodes = TRUE,
+                user_threshold = 0.05, correction_method = "gSCS", 
+                domain_scope = "annotated",
+                sources = c("GO", "KEGG", "REAC", "TF", "CORUM", "MIRNA", "WP"),
+                as_short_link = FALSE)
+
+gostres_link <- gost(list("Upregulated Genes" = upGenes.list,
+                          "Downregulated Genes" = downGenes.list), 
+                     as_short_link = TRUE)
+print(gostres_link)
+
+
+# import KEGG csv from E12 polyic v saline (males and females combined)
+# then make a pretty plot
+
+KEGGe12<-as.data.frame(E12_MnF_PolyIC_v_Saline_gProfiler_KEGG_UPterms$`term_name`)
+names(KEGGe12)[1]<-'KEGGTerm'
+KEGGe12$FoldEnrichment<-E12_MnF_PolyIC_v_Saline_gProfiler_KEGG_UPterms$negative_log10_of_adjusted_p_value
+KEGGe12$pValue<-E12_MnF_PolyIC_v_Saline_gProfiler_KEGG_UPterms$adjusted_p_value
+KEGGe12$Count<-E12_MnF_PolyIC_v_Saline_gProfiler_KEGG_UPterms$term_size
+KEGGe12$Genes<-E12_MnF_PolyIC_v_Saline_gProfiler_KEGG_UPterms$query_size
+KEGGe12$IntersectionSize<-E12_MnF_PolyIC_v_Saline_gProfiler_KEGG_UPterms$intersection_size
+
+KEGGe12$GeneRatio<-KEGGe12$Count/813
+KEGGe12$Count.per.gene<-KEGGe12$Count/KEGGe12$Genes
+View(KEGGe12)
+
+
+
+KEGGe12.handpicked<-KEGGe12[c(1,2,3,6,7,10,11,14,17,18,23,24,25,30,36,42,45,50),]
+KEGGe12.handpicked$GOTerm<-sub("\\(.*","",KEGGe12.handpicked$GOTerm)
+KEGGe12.handpicked$GOTerm<-str_to_title(KEGGe12.handpicked$GOTerm)
+View(KEGGe12.handpicked)
+
+
+
+dev.off()
+tiff("kegg.pla.e12.polyic.v.saline.mnf.upterms.tiff", units="in", width=10, height=6.5, res=300)
+ggplot(KEGGe12.handpicked, 
+       aes(x = GeneRatio, y =fct_reorder(KEGGTerm, GeneRatio))) + 
+  geom_point(aes(size = Count, color = pValue)) +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_text(colour = "black")) + 
+  theme(axis.text.y = element_text(size = 15, colour = "black")) +
+  scale_colour_gradient(trans = "log", limits=c(2.000e-12,4.2e-02
+), low="gray69", high="mediumorchid4") +
+  ylab(NULL)  
+dev.off()
+
+
+
+# polyic downregulated Go term plot
+
+# import go term csv file
+
+GOBPe12poly<-as.data.frame(E12_MnF_PolyIC_v_Saline_gProfiler_GOBP_DOWNterms$term_name)
+names(GOBPe12poly)[1]<-'GOTerm'
+GOBPe12poly$FoldEnrichment<-E12_MnF_PolyIC_v_Saline_gProfiler_GOBP_DOWNterms$negative_log10_of_adjusted_p_value
+GOBPe12poly$IntersectionSize<-E12_MnF_PolyIC_v_Saline_gProfiler_GOBP_DOWNterms$intersection_size
+View(GOBPe12poly)
+
+GOBPe12poly.handpicked<-GOBPe12poly[c(1,2,15,34,50,123,126,174,269,377,381,400),]
+GOBPe12poly.handpicked$GOTerm<-str_to_title(GOBPe12poly.handpicked$GOTerm)
+View(GOBPe12poly.handpicked)
+
+
+
+dev.off()
+tiff("gobp.pla.e12.polyic.v.saline.mnf.downterms.tiff", units="in", width=8, height=4.5, res=300)
+ggplot(GOBPe12poly.handpicked,
+       aes(x = FoldEnrichment,
+           y = GOTerm,
+            fill=IntersectionSize))+
+  geom_bar(stat="identity")+
+  scale_fill_gradient(low="gray",high="dodgerblue4")+
+  theme_classic(base_size = 14) +
+  theme(axis.text.x = element_text(colour = "black")) + 
+  theme(axis.text.y = element_text(size = 15, colour = "black")) +
+  ylab(NULL)
+dev.off()
+
+
+
+
+
+# E12 saline sex differences
+
+
+a = merged.counts[17:20]
+b = merged.counts[21:24]
+c = cbind(a,b)
+
+sample.conditions = factor(c(rep("Pla_Saline_E12_F",4), rep("Pla_Saline_E12_M",4)), levels=c("Pla_Saline_E12_F","Pla_Saline_E12_M"))
+
+
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_Saline_E12_F","Pla_Saline_E12_M"));
+dds = DESeq(deseq.counts.table)
+rld_HH = rlogTransformation(dds)
+
+lattice = Pla_Saline_E12_FvsM.lattice
+lattice = na.omit(lattice)
+
+
+res <- results(dds)
+resOrdered <- res[order(res$padj),] 
+resSig <- subset(resOrdered, padj < 0.1) 
+resSigUp <- subset(resSig, log2FoldChange > 0)
+resSigDown <- subset(resSig, log2FoldChange < 0)
+upGenes.list <- rownames(resSigUp)
+downGenes.list <- rownames(resSigDown)
+
+gostres <- gost(query = list("Upregulated Genes" = upGenes.list, 
+                             "Downregulated Genes" = downGenes.list),
+                organism = "mmusculus", 
+                ordered_query = TRUE,
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE,
+                measure_underrepresentation = FALSE,
+                evcodes = TRUE,
+                user_threshold = 0.05, correction_method = "gSCS", 
+                domain_scope = "annotated",
+                sources = c("GO", "KEGG", "REAC", "TF", "CORUM", "MIRNA", "WP"),
+                as_short_link = FALSE)
+
+gostres_link <- gost(list("Upregulated Genes" = upGenes.list,
+                          "Downregulated Genes" = downGenes.list), 
+                     as_short_link = TRUE)
+print(gostres_link)
+
+
+
+
+# KEGG term split dotplot 
+
+view(E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG)
+
+KEGGe12sex<-as.data.frame(E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`term_name`)
+names(KEGGe12sex)[1]<-'KEGGTerm'
+KEGGe12sex$TermSize<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$term_size
+
+KEGGe12sex$GenesUp<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`query_size__Upregulated Genes`
+KEGGe12sex$GenesDown<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`query_size__Downregulated Genes`
+
+KEGGe12sex$IntersectionSizeUp<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`intersection_size__Upregulated Genes`
+KEGGe12sex$IntersectionSizeUp[KEGGe12sex$IntersectionSizeUp<0] <-- NA
+KEGGe12sex$IntersectionSizeDown<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`intersection_size__Downregulated Genes`
+KEGGe12sex$IntersectionSizeDown[KEGGe12sex$IntersectionSizeDown<0] <-- NA
+
+KEGGe12sex$GeneRatioUp<-KEGGe12sex$IntersectionSizeUp/KEGGe12sex$TermSize
+KEGGe12sex$GeneRatioDown<-KEGGe12sex$IntersectionSizeDown/KEGGe12sex$TermSize
+
+KEGGe12sex<-KEGGe12sex %>%
+  mutate(GeneRatio = 
+           GeneRatioUp %>% 
+           is.na %>%
+           ifelse(GeneRatioDown, GeneRatioUp) )
+
+KEGGe12sex$padjUp<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`adjusted_p_value__Upregulated Genes`
+KEGGe12sex$padjDown<-E12_Saline_F_v_M_gProfiler_UPandDOWNterms_KEGG$`adjusted_p_value__Downregulated Genes`
+KEGGe12sex$log10adjpUp <-- log10(KEGGe12sex$padjUp)
+KEGGe12sex$log10adjpDown <-- log10(KEGGe12sex$padjDown)
+KEGGe12sex$log10adjP<-- KEGGe12sex$log10adjpUp + KEGGe12sex$log10adjpDown
+KEGGe12sex$log10adjpUp[KEGGe12sex$log10adjpUp==0] <-- NA
+KEGGe12sex$log10adjpDown[KEGGe12sex$log10adjpDown==0] <-- NA
+
+KEGGe12sex <- KEGGe12sex %>% 
+  mutate(Color = ifelse(log10adjpDown > 0, "lightblue",
+                        ifelse(log10adjpUp > 0, "dodgerblue4")))
+KEGGe12sex$Color<-replace_na(KEGGe12sex$Color, "dodgerblue4")
+
+View(KEGGe12sex)
+
+KEGGe12sex.handpicked<-KEGGe12sex[c(1,2,4,5,7,8,10,12,13,15,19,21,22,25,27,28,29,34,35,36),]
+View(KEGGe12sex.handpicked)
+
+
+
+dev.off()
+tiff("kegg.pla.e12.saline.f.v.m.female.tiff", units="in", width=6.5, height=6.5, res=300)
+ggplot(KEGGe12sex.handpicked, 
+       aes(x = GeneRatio, 
+           y =fct_reorder(KEGGTerm, GeneRatio))) + 
+  geom_point(aes(size = abs(log10adjP), color = Color))+
+  scale_color_identity() +
+  theme_bw(base_size = 14) +
+  theme(axis.text.x = element_text(colour = "black")) + 
+  theme(axis.text.y = element_text(size = 10, colour = "black")) +
+  ylab(NULL)  
+dev.off()
+
+
+
+
+
+
+
+
+# E14 saline sex differences
+
+
+a = merged.counts[25:28]
+b = merged.counts[29:32]
+c = cbind(a,b)
+
+sample.conditions = factor(c(rep("Pla_PolyIC_E14_F",4), rep("Pla_PolyIC_E14_M",4)), levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"))
+
+
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$condition<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_PolyIC_E14_F","Pla_PolyIC_E14_M"));
+dds = DESeq(deseq.counts.table)
+rld_HH = rlogTransformation(dds)
+
+lattice = Pla_Saline_E12_FvsM.lattice
+lattice = na.omit(lattice)
+
+
+res <- results(dds)
+resOrdered <- res[order(res$padj),] 
+resSig <- subset(resOrdered, padj < 0.1) 
+resSigUp <- subset(resSig, log2FoldChange > 0)
+resSigDown <- subset(resSig, log2FoldChange < 0)
+upGenes.list <- rownames(resSigUp)
+downGenes.list <- rownames(resSigDown)
+
+gostres <- gost(query = list("Upregulated Genes" = upGenes.list, 
+                             "Downregulated Genes" = downGenes.list),
+                organism = "mmusculus", 
+                ordered_query = TRUE,
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE,
+                measure_underrepresentation = FALSE,
+                evcodes = TRUE,
+                user_threshold = 0.05, correction_method = "gSCS", 
+                domain_scope = "annotated",
+                sources = c("GO", "KEGG", "REAC", "TF", "CORUM", "MIRNA", "WP"),
+                as_short_link = FALSE)
+
+gostres_link <- gost(list("Upregulated Genes" = upGenes.list,
+                          "Downregulated Genes" = downGenes.list), 
+                     as_short_link = TRUE)
+print(gostres_link)
+
+
+
+
+# E12 v E14
+
+E12salineF = merged.counts[17:20]
+E12salineM = merged.counts[21:24]
+E14salineF = merged.counts[25:28]
+E14salineM = merged.counts[29:32]
+c = cbind(E12salineM,E12salineF,E14salineM,E14salineF)
+sample.conditions = factor(c(rep("Pla_Saline_E12",8), rep("Pla_Saline_E14",8)), levels=c("Pla_Saline_E12","Pla_Saline_E14"))
+deseq.counts.table = DESeqDataSetFromMatrix(c, DataFrame(sample.conditions), ~ sample.conditions);
+colData(deseq.counts.table)$sample.conditions<-factor(colData(deseq.counts.table)$sample.conditions, levels=c("Pla_Saline_E12","Pla_Saline_E14"));
+dds = DESeq(deseq.counts.table)
+rld_HH = rlogTransformation(dds)
+
+lattice = Pla_Saline_MnF_E12_v_E14.lattice
+lattice = na.omit(lattice)
+
+res <- results(dds)
+resOrdered <- res[order(res$padj),] 
+resSig <- subset(resOrdered, padj < 0.1) 
+resSigUp <- subset(resSig, log2FoldChange > 0)
+resSigDown <- subset(resSig, log2FoldChange < 0)
+upGenes.list <- rownames(resSigUp)
+downGenes.list <- rownames(resSigDown)
+
+gostres <- gost(query = list("Upregulated Genes" = upGenes.list, 
+                             "Downregulated Genes" = downGenes.list),
+                organism = "mmusculus", 
+                ordered_query = TRUE,
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE,
+                measure_underrepresentation = FALSE,
+                evcodes = TRUE,
+                user_threshold = 0.05, correction_method = "gSCS", 
+                domain_scope = "annotated",
+                sources = c("GO", "KEGG", "REAC", "TF", "CORUM", "MIRNA", "WP"),
+                as_short_link = FALSE)
+
+gostres_link <- gost(list("Upregulated Genes" = upGenes.list,
+                          "Downregulated Genes" = downGenes.list), 
+                     as_short_link = TRUE)
+print(gostres_link)
+
+
+
+
+##### reactome term plots! #####
+
+## saline e12 v e14
+
+df=gProfiler_Pla_Saline_MnF_E12_v_E14
+reac.terms.e12<-df[df$source == 'REAC', ]
+
+
+reac.terms<-as.data.frame(reac.terms.e12$term_name)
+names(reac.terms)[1]<-'Term'
+reac.terms$TermSize<-reac.terms.e12$term_size
+
+reac.terms$GenesUp<-reac.terms.e12$`query_size__Upregulated Genes`
+reac.terms$GenesDown<-reac.terms.e12$`query_size__Downregulated Genes`
+
+reac.terms$IntersectionSizeUp<-reac.terms.e12$`intersection_size__Upregulated Genes`
+reac.terms$IntersectionSizeUp[reac.terms$IntersectionSizeUp<0] <-- NA
+reac.terms$IntersectionSizeDown<-reac.terms.e12$`intersection_size__Downregulated Genes`
+reac.terms$IntersectionSizeDown[reac.terms$IntersectionSizeDown<0] <-- NA
+
+reac.terms$GeneRatioUp<-reac.terms$IntersectionSizeUp/reac.terms$TermSize
+reac.terms$GeneRatioDown<-reac.terms$IntersectionSizeDown/reac.terms$TermSize
+
+reac.terms<-reac.terms %>%
+  mutate(GeneRatio = 
+           GeneRatioUp %>% 
+           is.na %>%
+           ifelse(GeneRatioDown, GeneRatioUp) )
+
+reac.terms$padjUp<-reac.terms.e12$`adjusted_p_value__Upregulated Genes`
+reac.terms$padjDown<-reac.terms.e12$`adjusted_p_value__Downregulated Genes`
+reac.terms$log10adjpUp <-- log10(reac.terms$padjUp)
+reac.terms$log10adjpDown <-- log10(reac.terms$padjDown)
+reac.terms$log10adjP<-- reac.terms$log10adjpUp + reac.terms$log10adjpDown
+reac.terms$log10adjpUp[reac.terms$log10adjpUp==0] <-- NA
+reac.terms$log10adjpDown[reac.terms$log10adjpDown==0] <-- NA
+
+reac.terms$log10adjP<--0-reac.terms$log10adjP #swap direction of p value for correct graphing below
+
+view(reac.terms)
+
+reac.terms.handpicked.e12<-reac.terms[c(6,9,16,22,40,123,153,163,178,184),]
+
+reac.terms.handpicked.e12 <- reac.terms.handpicked.e12 %>% 
+  mutate(Timepoint = ifelse(log10adjpDown > 0, "E12",
+                            ifelse(log10adjpUp > 0, "E14")))
+reac.terms.handpicked.e12$Timepoint<-replace_na(reac.terms.handpicked.e12$Timepoint, "E14")
+
+reac.terms.handpicked.e12$Term[reac.terms.handpicked.e12$Term == "Cell Cycle Checkpoints"] <- "Cell cycle checkpoints"
+reac.terms.handpicked.e12$Term[reac.terms.handpicked.e12$Term == "DNA Replication"] <- "DNA replication"
+
+View(reac.terms.handpicked.e12)
+
+
+dev.off()
+tiff("reac.pla.saline.e12.v.e14.bar.tiff", units="in", width=9, height=4, res=300)
+ggplot(reac.terms.handpicked.e12,
+       aes(x = log10adjP,
+           y = fct_rev(fct_reorder(Term, Timepoint)), 
+           fill= Timepoint))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=c("darkgreen","darkseagreen"))+
+  theme_classic(base_size = 14) +
+  theme(axis.text.x = element_text(colour = "black")) + 
+  theme(axis.text.y = element_text(size = 15, colour = "black")) +
+  ylab(NULL)
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#####  Sex difference plots  #####
+
+
+
+## Venn diagrams
+
+
+####find intersections between E12 Saline M v F and E14 Saline M v F ####
+
+
+# first find all of the shared "activated" intersections (ie male up)
+
+lattice = Pla_Saline_E12_FvsM.lattice
+E12.activated.male <- as.data.frame((lattice[lattice$response == 'M Activated',c(2,5,6)]))
+view(E12.activated.male)
+
+lattice = Pla_Saline_E14_FvsM.lattice
+E14.activated.male <- as.data.frame((lattice[lattice$response == 'M Activated',c(2,5,6)]))
+view(E14.activated.male)
+
+E12.male<-as.character(rownames(E12.activated.male))
+E14.male<-as.character(rownames(E14.activated.male))
+Intersection.male<-intersect((rownames(E12.activated.male)),(rownames(E14.activated.male)))
+
+unique.E12.male<-as.data.frame(setdiff(E12.male, Intersection.male))
+unique.E14.male<-as.data.frame(setdiff(E14.male, Intersection.male))
+intersections.male.activated <- as.data.frame(intersect((rownames(E12.activated.male)),(rownames(E14.activated.male))))
+
+
+# then find all of the shared "repressed" intersections (ie female up)
+
+lattice = Pla_Saline_E12_FvsM.lattice
+E12.activated.female <- as.data.frame((lattice[lattice$response == 'M Repressed',c(2,5,6)]))
+view(E12.activated.female)
+
+lattice = Pla_Saline_E14_FvsM.lattice
+E14.activated.female <- as.data.frame((lattice[lattice$response == 'M Repressed',c(2,5,6)]))
+view(E14.activated.female)
+
+E12.female<-as.character(rownames(E12.activated.female))
+E14.female<-as.character(rownames(E14.activated.female))
+Intersection.female<-intersect((rownames(E12.activated.female)),(rownames(E14.activated.female)))
+
+unique.E12.female<-as.data.frame(setdiff(E12.female, Intersection.female))
+unique.E14.female<-as.data.frame(setdiff(E14.female, Intersection.female))
+intersections.female.activated <- as.data.frame(intersect((rownames(E12.activated.female)),(rownames(E14.activated.female))))
+
+
+
+# save these lists
+
+write.csv(intersections.male.activated, file = "intersections.male.activated.csv", row.names = TRUE)
+write.csv(intersections.female.activated, file = "intersections.female.activated.csv", row.names = TRUE)
+write.csv(unique.E12.female, file = "unique.E12.female.csv", row.names = TRUE)
+write.csv(unique.E14.female, file = "unique.E14.female.csv", row.names = TRUE)
+write.csv(unique.E12.male, file = "unique.E12.male.csv", row.names = TRUE)
+write.csv(unique.E14.male, file = "unique.E14.male.csv", row.names = TRUE)
+
+
+
+
+
+# make some plots!
+
+venn.diagram(
+  x = list(rownames(E12.activated.male),rownames(E14.activated.male)),
+  category.names = c("E12" , "E14"),
+  filename = 'venn_diagram_saline_males.tiff',
+  height = 1000, 
+  width = 1000,
+  resolution = 400,
+  fill = c("plum3","gray"),
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  output=TRUE
+)
+
+venn.diagram(
+  x = list(rownames(E12.activated.female),rownames(E14.activated.female)),
+  category.names = c("E12" , "E14"),
+  filename = 'venn_diagram_saline_females.tiff',
+  height = 1000, 
+  width = 1000,
+  resolution = 500,
+  fill = c("plum3","gray"),
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  output=TRUE
+)
+
+venn.diagram(
+  x = list(rownames(E12.activated.male),rownames(E14.activated.male)),
+  category.names = c("E12" , "E14"),
+  filename = 'venn_diagram_saline_males_2.tiff',
+  height = 1000, 
+  width = 1000,
+  resolution = 400,
+  fill = c("darkseagreen3","gray20"),
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  cat.cex = 0,
+  output=TRUE
+)
+
+venn.diagram(
+  x = list(rownames(E12.activated.female),rownames(E14.activated.female)),
+  category.names = c("E12" , "E14"),
+  filename = 'venn_diagram_saline_females_2.tiff',
+  height = 1000, 
+  width = 1000,
+  resolution = 400,
+  fill = c("darkseagreen3","gray20"),
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  cat.cex = 0,
+  output=TRUE
+)
+
+
+
+
+## Reactome bar graphs to go with the Venn diagrams 
+
+# load in the pathway csv files for all venn intersections
+
+
+#  prep REAC terms
+
+df = gProfiler_intersections_female_activated
+F.intersect.reac<-df[df$source == 'REAC', ]
+df = gProfiler_intersections_male_activated
+M.intersect.reac<-df[df$source == 'REAC', ]
+df = gProfiler_unique_E12_female
+F.unique.e12.reac<-df[df$source == 'REAC', ]
+df = gProfiler_unique_E14_female
+F.unique.e14.reac<-df[df$source == 'REAC', ]
+df = gProfiler_unique_E12_male
+M.unique.e12.reac<-df[df$source == 'REAC', ]
+df = gProfiler_unique_E14_male
+M.unique.e14.reac<-df[df$source == 'REAC', ]
+
+
+male.reac.summary <- dplyr::bind_rows(list(M.unique.e12.reac, M.intersect.reac,M.unique.e14.reac), .id = 'source')
+male.reac.summary$source[male.reac.summary$source == "1"] <- "E12"
+male.reac.summary$source[male.reac.summary$source == "2"] <- "E12/E14 overlap"
+male.reac.summary$source[male.reac.summary$source == "3"] <- "E14"
+names(male.reac.summary)[1]<-"Category"
+names(male.reac.summary)[5]<-"log10P"
+view(male.reac.summary)
+
+
+female.reac.summary <- dplyr::bind_rows(list(F.unique.e12.reac, F.intersect.reac,F.unique.e14.reac), .id = 'source')
+female.reac.summary$source[female.reac.summary$source == "1"] <- "E12"
+female.reac.summary$source[female.reac.summary$source == "2"] <- "E12/E14 overlap"
+female.reac.summary$source[female.reac.summary$source == "3"] <- "E14"
+names(female.reac.summary)[1]<-"Category"
+names(female.reac.summary)[5]<-"log10P"
+view(female.reac.summary)
+
+
+# clean up REAC terms to actually plot
+
+male.reac.summary<-male.reac.summary[c(1,2,4,5:17),]
+female.reac.summary<-female.reac.summary[c(1,4:6,8:14,16,17,19:21),]
+
+male.reac.summary$term_name <- factor(male.reac.summary$term_name, levels = male.reac.summary$term_name)
+female.reac.summary$term_name <- factor(female.reac.summary$term_name, levels = female.reac.summary$term_name)
+
+
+# bar plots
+
+dev.off()
+tiff("male.reac.barchart.tiff", units="in", width=12, height=7, res=300)
+ggplot(male.reac.summary,
+       aes(x = log10P,
+           y = term_name,
+           fill= Category))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=c("gray50","darkseagreen4","darkseagreen3"))+
+  theme_classic(base_size = 14) +
+  theme(axis.text.x = element_text(colour = "black")) + 
+  theme(axis.text.y = element_text(size = 15, colour = "black")) +
+  ylab(NULL)
+dev.off()
+
+
+dev.off()
+tiff("female.reac.barchart.tiff", units="in", width=10, height=7, res=300)
+ggplot(female.reac.summary,
+       aes(x = log10P,
+           y = term_name,
+           fill= Category))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=c("gray50","darkseagreen4","darkseagreen3"))+
+  theme_classic(base_size = 14) +
+  theme(axis.text.x = element_text(colour = "black")) + 
+  theme(axis.text.y = element_text(size = 15, colour = "black")) +
+  ylab(NULL)
+dev.off()
+
+
+
+
+### VENN DIAGRAM PT 2
+
+####find intersections between E12 PolyI:C M and E12 PolyI:C F ####
+
+
+# first find all of the shared intersections from polyI:C upregulated genes
+
+lattice = Pla_PolyIC_vs_Saline_E12_F.lattice
+E12.polyic.up.F <- as.data.frame((lattice[lattice$response == 'PolyIC Activated',c(2,5,6)]))
+view(E12.polyic.up.F)
+
+lattice = Pla_PolyIC_vs_Saline_E12_M.lattice
+E12.polyic.up.M <- as.data.frame((lattice[lattice$response == 'PolyIC Activated',c(2,5,6)]))
+view(E12.polyic.up.M)
+
+E12.female.up<-as.character(rownames(E12.polyic.up.F))
+E12.male.up<-as.character(rownames(E12.polyic.up.M))
+Intersection.up<-intersect((rownames(E12.polyic.up.F)),(rownames(E12.polyic.up.M)))
+
+unique.E12.female.up<-as.data.frame(setdiff(E12.female.up, Intersection.up))
+unique.E12.male.up<-as.data.frame(setdiff(E12.male.up, Intersection.up))
+intersections.E12.up <- as.data.frame(intersect((rownames(E12.polyic.up.F)),(rownames(E12.polyic.up.M))))
+
+
+# then find all of the shared intersections from polyI:C downregulated genes
+
+lattice = Pla_PolyIC_vs_Saline_E12_F.lattice
+E12.polyic.down.F <- as.data.frame((lattice[lattice$response == 'PolyIC Repressed',c(2,5,6)]))
+view(E12.polyic.down.F)
+
+lattice = Pla_PolyIC_vs_Saline_E12_M.lattice
+E12.polyic.down.M <- as.data.frame((lattice[lattice$response == 'PolyIC Repressed',c(2,5,6)]))
+view(E12.polyic.down.M)
+
+E12.female.down<-as.character(rownames(E12.polyic.down.F))
+E12.male.down<-as.character(rownames(E12.polyic.down.M))
+Intersection.down<-intersect((rownames(E12.polyic.down.F)),(rownames(E12.polyic.down.M)))
+
+unique.E12.female.down<-as.data.frame(setdiff(E12.female.down, Intersection.up))
+unique.E12.male.down<-as.data.frame(setdiff(E12.male.down, Intersection.up))
+intersections.E12.down <- as.data.frame(intersect((rownames(E12.polyic.down.F)),(rownames(E12.polyic.down.M))))
+
+
+
+# save these lists
+
+write.csv(intersections.E12.up, file = "intersections.E12.up.csv", row.names = TRUE)
+write.csv(intersections.E12.down, file = "intersections.E12.down.csv", row.names = TRUE)
+write.csv(unique.E12.female.up, file = "unique.E12.female.up.csv", row.names = TRUE)
+write.csv(unique.E12.male.up, file = "unique.E12.male.up.csv", row.names = TRUE)
+write.csv(unique.E12.female.down, file = "unique.E12.female.down.csv", row.names = TRUE)
+write.csv(unique.E12.male.down, file = "unique.E12.male.down.csv", row.names = TRUE)
+
+
+
+
+
+# make some plots!
+
+venn.diagram(
+  x = list(E12.female.up,E12.male.up),
+  category.names = c(" " , " "),
+  filename = 'venn_diagram_polyic_v_saline_E12_upgenes.tiff',
+  height = 1000, 
+  width = 1000,
+  resolution = 400,
+  fill = c("plum3","gray"),
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  output=TRUE
+)
+
+venn.diagram(
+  x = list(E12.female.down,E12.male.down),
+  category.names = c("Female" , "Male"),
+  filename = 'venn_diagram_polyic_v_saline_E12_downgenes.tiff',
+  height = 1000, 
+  width = 1000,
+  resolution = 500,
+  fill = c("plum3","gray"),
+  fontface = "bold",
+  fontfamily = "sans",
+  cat.fontfamily = "sans",
+  output=TRUE
+)
+
+
+
+
+
+
+
+
+### Circos plot ####
+
+
+
+# first pull out the go terms and their genes
+
+df=E12_Saline_F_v_M_gProfiler_DOWNterms_detailed
+goterms<-df[df$source == 'GO:BP', ]
+goterms<-as.data.frame(goterms$intersections,goterms$term_name)
+names(goterms)[1]<-"Genes"
+goterms$Names<-rownames(goterms)
+view(goterms)
+
+# next find the common genes within each go term 
+
+duplicates <- goterms[duplicated(goterms$Genes), ]
+view(duplicates)
+
+
+# clean up the go terms that you actually want to plot, then run the duplicated function again to ammend the overlaps with this new set
+
+rownames(duplicates) <- NULL
+duplicates2<-duplicates[-c(1:3,5,7,9,13,14,16,20:27,32,34:42,44,48,52:82,84:86,90,91),]
+
+
+# go back and pull the original gene lists for these selected terms
+circos.goterms<-duplicates2$Names
+circos.goterms<-goterms[goterms$Names %in% circos.goterms,]
+view(circos.goterms)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# prep stuff for the circos plots
+
+colfunc<-colorRampPalette(c("red","yellow","springgreen","royalblue","purple"))
+
+#pick a distinct color from the palette for each disease and save the list of colors as a vector
+colors = colfunc(length(circos.goterms$Names))
+
+#add '80' to color hex codes to adjust transparency
+for(i in 1:length(colors)) {
+  colors[i] = paste0(colors[i],'80')
+}
+
+#make separate data frame assigning each disease a color
+color.df = data.frame(circos.goterms=unique(circos.goterms$Names),colors=colors)
+
+#this shouldn't affect anything but need to set at least two different y-values
+y = rep(c(0,1),nrow(circos.goterms)/2)
+if(length(y) != nrow(circos.goterms)) {
+  y = append(0,y)
+}
+df$y = y
